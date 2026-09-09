@@ -49,7 +49,7 @@ rule slurm_script:
         scratch_tmp = f"{os.getenv('SCRATCH', '/tmp')}/veros_tmp"
 
         command = [
-            "singularity", "exec", "--nv",
+            "singularity", "exec", "--nv", "--pwd", "/workspace/veros",
             "--env-file", f"{repo_root}/.jz_env",
             "--bind", f"{scratch_tmp}:{scratch_tmp}",
             "--bind", f"{repo_root}:/workspace/veros",
@@ -63,18 +63,35 @@ rule slurm_script:
             "--launcher", config["launcher"],
             "--rank-env", config["rank_env"],
             "--local-rank-env", config["local_rank_env"],
+            "--memory-sample-interval", str(config.get("memory_sample_interval", 5)),
+            *(["--communication-profile"] if config.get("communication_profile", True) else []),
+            *(["--jax-trace"] if config.get("jax_trace", True) else []),
             "--profiler", config["profiler"],
             f"--profiler-args={config['profiler_args']}" if config.get('profiler_args') else "--profiler-args=",
             "--output-dir", params.output_dir,
             *shlex.split(params.size_args),
             "--",
-            "/workspace/veros/tools/veros_rank_wrapper.sh",
-            "veros", "run", config["setup_file"],
+            "bash", "-c",
+            (
+                f"export CUDA_VISIBLE_DEVICES=${config['local_rank_env']}; "
+                f"echo \"MPI rank=${config['rank_env']} "
+                f"local_rank=${config['local_rank_env']} "
+                "GPU=$CUDA_VISIBLE_DEVICES\"; "
+                "exec \"$@\""
+                + (
+                    " --jax-trace-dir \"$VEROS_JAX_PROFILER_TRACE\""
+                    if config.get("jax_trace", True)
+                    else ""
+                )
+            ),
+            "veros-gpu-rank",
+            "python", "-m", "veros", "run", config["setup_file"],
             "-b", "jax", "--device", "gpu",
             "-n", "{px}", "{py}",
             "-s", "nx", "{nx}", "-s", "ny", "{ny}", "-s", "nz", "{nz}",
             "-s", "runlen", str(config["timesteps"] * config["dt"]),
             "--diskless-mode",
+            *(["--profile-mode"] if config.get("communication_profile", True) else []),
         ]
 
         script = f"""#!/bin/bash
